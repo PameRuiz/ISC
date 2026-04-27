@@ -44,6 +44,12 @@ def cargar_datos():
         df_airbnb = pd.merge(df_airbnb, df_inicio, on='id', how='left')
         df_airbnb['year_start'] = df_airbnb['fecha_inicio'].dt.year
 
+        # CLASIFICACIÓN DE ANFITRIONES
+        # Con la columna calculated_host_listings_count, separamos en Multi-host (profesionales) vs Single-host
+        df_airbnb['host_type'] = df_airbnb['calculated_host_listings_count'].apply(
+            lambda x: 'Multi-host' if x > 1 else 'Single-host'
+        )
+
         years = [2016, 2018, 2020, 2022, 2024]
         # Como los precios estan por años en columna, hacemos un melt
         # el melt es una función de pandas que transforma un dataframe de formato ancho a formato largo,
@@ -65,15 +71,28 @@ def cargar_datos():
             temp = pd.merge(df_precios[df_precios['Año'] == y], count, on='key', how='left').fillna(0)
             frames.append(temp)
 
+        # Unimos todos los años y ordenamos por distrito y año para asegurar la continuidad en los gráficos
         df_final = pd.concat(frames).sort_values(['Distrito', 'Año'])
-        return df_final, geojson_data
+        return df_final, geojson_data, df_airbnb
     except Exception as e:
         st.error(f"Error cargando archivos: {e}")
-        return None, None
+        return None, None, None
 
-df_final, geojson_data = cargar_datos()
+df_final, geojson_data, df_airbnb_raw = cargar_datos()
 
 if df_final is not None:
+    # Calculamos el Coeficiente de Correlación de Pearson global para todo el conjunto de datos
+    correlacion_global = df_final['Total_Airbnb'].corr(df_final['Precio_m2'])
+
+    # Calculamos el factor de correlación específico por cada distrito para el GeoJSON
+    dict_corr_distrito = {}
+    for distrito in df_final['Distrito'].unique():
+        df_dist = df_final[df_final['Distrito'] == distrito]
+        # Si no hay variación en los datos la correlación puede dar NaN, lo manejamos con fillna
+        dict_corr_distrito[distrito] = df_dist['Total_Airbnb'].corr(df_dist['Precio_m2'])
+    
+    df_final['Correlacion_Distrito'] = df_final['Distrito'].map(dict_corr_distrito)
+
     # Definimos la interfaz de usuario
     st.title("🏙️ Impacto de Airbnb en Valencia")
     st.markdown("Análisis de la relación entre el crecimiento de pisos turísticos y el precio del alquiler.")
@@ -86,14 +105,15 @@ if df_final is not None:
         default=df_final.groupby('Distrito').apply(lambda x: (x.iloc[-1]['Precio_m2'] - x.iloc[0]['Precio_m2'])/x.iloc[0]['Precio_m2']).nlargest(3).index.tolist()
     )
 
-    # Un resumen de metricas clave (solo tenemos hasta 2024)
-    col1, col2, col3 = st.columns(3)
+    # Un resumen de metricas clave (agregamos la Correlación como punto central)
+    col1, col2, col3, col4 = st.columns(4)
     avg_price = df_final[df_final['Año'] == 2024]['Precio_m2'].mean()
     total_airbnb = df_final[df_final['Año'] == 2024]['Total_Airbnb'].sum()
 
     col1.metric("Precio Medio 2024", f"{avg_price:.2f} €/m²")
     col2.metric("Total Airbnb 2024", f"{int(total_airbnb)} listings")
     col3.metric("Año del estudio", "2016 - 2024")
+    col4.metric("Correlación de Pearson", f"{correlacion_global:.2f}", help="Indica qué tan fuerte es la relación entre el volumen de Airbnb y el precio del alquiler.")
 
     # -------------------------------------------------------------
     # INSIGHTS RÁPIDOS: TOP HOTSPOTS
@@ -127,14 +147,15 @@ if df_final is not None:
         rentable_val = max_price_growth_val
 
     col_a, col_b, col_c = st.columns(3)
-    col_a.metric("Barrio más saturado (Crecimiento Airbnb)", f"{max_airbnb_district}", f"+{int(max_airbnb_growth)} pisos desde 2016", delta_color="inverse")
-    col_b.metric("Mayor aumento de precio", f"{max_price_growth_district}", f"+{max_price_growth_val:.1f}% desde 2016", delta_color="inverse")
-    col_c.metric("Mayor rentabilidad (Baja saturación Airbnb)", f"{rentable_district}", f"+{rentable_val:.1f}% de precio", delta_color="inverse")
+    col_a.metric("Barrio más saturado", f"{max_airbnb_district}", f"+{int(max_airbnb_growth)} pisos", delta_color="inverse")
+    col_b.metric("Mayor aumento de precio", f"{max_price_growth_district}", f"+{max_price_growth_val:.1f}%", delta_color="inverse")
+    col_c.metric("Efecto Desplazamiento", f"{rentable_district}", f"+{rentable_val:.1f}% de precio")
     st.markdown("---")
 
 
-    # Gráfico de mapa de calor y gráfico de líneas en distintos tabs
-    tab1, tab2 = st.tabs(["🗺️ Mapa de Calor", "📈 Evolución Temporal"])
+    # Gráfico de mapa de calor y gráfico de líneas en distintos tabs, añadiendo Tipo de Anfitrión e Impacto
+    tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Mapa de Calor", "📈 Evolución Temporal", "👥 Tipo de Anfitrión", "⚖️ Mapa de Impacto"])
+    
     with tab1:
         st.subheader("Distribución Geográfica de Precios")
         # choropleth_map es una función de plotly para crear mapas coloreados segun valores.
@@ -146,8 +167,7 @@ if df_final is not None:
             map_style="carto-positron", zoom=11.5, center={"lat": 39.47, "lon": -0.376}, 
             opacity=0.7, height=600
         )
-        # Es la funcion de streamlit para mostrar el grafico, con width stretch para que ocupe todo el ancho disponible.
-        st.plotly_chart(fig_mapa, width='stretch')
+        st.plotly_chart(fig_mapa, use_container_width=True)
 
     with tab2:
         st.subheader("Relación Oferta Airbnb vs Precio Alquiler")
@@ -161,7 +181,35 @@ if df_final is not None:
         )
         fig_lineas.update_traces(textposition="top center")
         fig_lineas.update_layout(template="plotly_white")
-        st.plotly_chart(fig_lineas, width='stretch')
+        st.plotly_chart(fig_lineas, use_container_width=True)
+
+    with tab3:
+        st.subheader("Análisis de Anfitriones: Multi-host vs Single-host")
+        # Creamos un grafico de tarta mostrando la concentración de la propiedad
+        host_counts = df_airbnb_raw['host_type'].value_counts().reset_index()
+        host_counts.columns = ['Tipo', 'Cantidad']
+        
+        fig_pie = px.pie(
+            host_counts, values='Cantidad', names='Tipo', 
+            hole=0.4, color='Tipo',
+            color_discrete_map={'Multi-host': '#e74c3c', 'Single-host': '#2ecc71'},
+            height=600
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+        st.info("El debate político suele centrarse en los 'Multi-hosts', que representan la explotación profesional del mercado.")
+
+    with tab4:
+        st.subheader("Factor de Correlación por Distrito")
+        # Mostramos en el GeoJSON el factor calculado por cada barrio (estático para el periodo total)
+        fig_mapa_impacto = px.choropleth_map(
+            df_final[df_final['Año'] == 2024], geojson=geojson_data, locations="key", featureidkey="properties.nombre_limpio",
+            color="Correlacion_Distrito", hover_name="Distrito",
+            hover_data={"Correlacion_Distrito": ':.3f', "Precio_m2": False, "key": False},
+            color_continuous_scale="Viridis", 
+            map_style="carto-positron", zoom=11.5, center={"lat": 39.47, "lon": -0.376}, 
+            opacity=0.8, height=600
+        )
+        st.plotly_chart(fig_mapa_impacto, use_container_width=True)
 
     # Podemos ver una tabla con los datos finales.
     if st.checkbox("Mostrar tabla de datos"):
