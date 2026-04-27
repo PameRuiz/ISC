@@ -95,6 +95,44 @@ if df_final is not None:
     col2.metric("Total Airbnb 2024", f"{int(total_airbnb)} listings")
     col3.metric("Año del estudio", "2016 - 2024")
 
+    # -------------------------------------------------------------
+    # INSIGHTS RÁPIDOS: TOP HOTSPOTS
+    # -------------------------------------------------------------
+    st.markdown("### 💡 Insights Rápidos: Top Hotspots")
+    
+    df_2016 = df_final[df_final['Año'] == 2016].set_index('Distrito')
+    df_2024 = df_final[df_final['Año'] == 2024].set_index('Distrito')
+    
+    # 1. Barrio más saturado (mayor crecimiento absoluto de Airbnb)
+    airbnb_growth = df_2024['Total_Airbnb'] - df_2016['Total_Airbnb']
+    max_airbnb_district = airbnb_growth.idxmax()
+    max_airbnb_growth = airbnb_growth.max()
+    
+    # 2. Mayor rentabilidad (mayor crecimiento porcentual de precio)
+    precio_pct_growth = ((df_2024['Precio_m2'] - df_2016['Precio_m2']) / df_2016['Precio_m2']) * 100
+    max_price_growth_district = precio_pct_growth.idxmax()
+    max_price_growth_val = precio_pct_growth.max()
+
+    # 3. Rentabilidad con baja saturación (Efecto desplazamiento)
+    # Buscamos el distrito que más ha subido de precio pero cuyo crecimiento de Airbnb está por debajo de la mediana
+    airbnb_pct_growth = ((df_2024['Total_Airbnb'] - df_2016['Total_Airbnb']) / df_2016['Total_Airbnb'].replace(0, 1)) * 100
+    median_airbnb_growth = airbnb_pct_growth.median()
+    low_airbnb_districts = airbnb_pct_growth[airbnb_pct_growth < median_airbnb_growth].index
+    
+    if len(low_airbnb_districts) > 0:
+        rentable_district = precio_pct_growth[low_airbnb_districts].idxmax()
+        rentable_val = precio_pct_growth[rentable_district]
+    else:
+        rentable_district = max_price_growth_district
+        rentable_val = max_price_growth_val
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Barrio más saturado (Crecimiento Airbnb)", f"{max_airbnb_district}", f"+{int(max_airbnb_growth)} pisos desde 2016", delta_color="inverse")
+    col_b.metric("Mayor aumento de precio", f"{max_price_growth_district}", f"+{max_price_growth_val:.1f}% desde 2016", delta_color="inverse")
+    col_c.metric("Mayor rentabilidad (Baja saturación Airbnb)", f"{rentable_district}", f"+{rentable_val:.1f}% de precio", delta_color="inverse")
+    st.markdown("---")
+
+
     # Gráfico de mapa de calor y gráfico de líneas en distintos tabs
     tab1, tab2 = st.tabs(["🗺️ Mapa de Calor", "📈 Evolución Temporal"])
     with tab1:
